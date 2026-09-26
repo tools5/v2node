@@ -1,0 +1,26 @@
+name: Go tests
+
+on:
+  push:
+    branches: [main]
+    paths: ['**/*.go', 'go.mod', 'go.sum', '.github/workflows/test.yml']
+  pull_request:
+    paths: ['**/*.go', 'go.mod', 'go.sum', '.github/workflows/test.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GOEXPERIMENT: jsonv2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - name: Check concurrent connection tracking and control
+        run: go test -race ./common/connections ./common/connectioncontrol ./api/v2board ./core/app/dispatcher ./core

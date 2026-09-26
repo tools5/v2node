@@ -21,6 +21,11 @@ func (w *ManagedWriter) Close() error {
 	return common.Close(w.writer)
 }
 
+func (w *ManagedWriter) Interrupt() {
+	w.manager.RemoveWriter(w)
+	common.Interrupt(w.writer)
+}
+
 type LinkManager struct {
 	links  map[*ManagedWriter]buf.Reader
 	mu     sync.RWMutex

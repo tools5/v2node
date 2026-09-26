@@ -25,6 +25,8 @@ type Controller struct {
 	nodeInfoMonitorPeriodic *task.Task
 	userReportPeriodic      *task.Task
 	renewCertPeriodic       *task.Task
+	connectionMonitorCancel context.CancelFunc
+	connectionMonitorDone   chan struct{}
 }
 
 // NewController return a Node controller with default parameters.
@@ -90,11 +92,13 @@ func (c *Controller) Start(x *core.V2Core) error {
 	log.WithField("tag", c.tag).Infof("Added %d new users", added)
 	c.info = node
 	c.startTasks(node)
+	c.startConnectionMonitor()
 	return nil
 }
 
 // Close implement the Close() function of the service interface
 func (c *Controller) Close() error {
+	c.stopConnectionMonitor()
 	limiter.DeleteLimiter(c.tag)
 	if c.nodeInfoMonitorPeriodic != nil {
 		c.nodeInfoMonitorPeriodic.Close()

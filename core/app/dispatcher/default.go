@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wyx2685/v2node/common/connections"
 	"github.com/wyx2685/v2node/common/counter"
 	"github.com/wyx2685/v2node/common/rate"
 	"github.com/wyx2685/v2node/limiter"
@@ -41,7 +42,7 @@ type cachedReader struct {
 
 func (r *cachedReader) Cache(b *buf.Buffer, deadline time.Duration) error {
 	mb, err := r.reader.ReadMultiBufferTimeout(deadline)
-	if err != nil {
+	if err != nil && mb.IsEmpty() {
 		return err
 	}
 	r.Lock()
@@ -53,7 +54,7 @@ func (r *cachedReader) Cache(b *buf.Buffer, deadline time.Duration) error {
 	n := r.cache.Copy(rawBytes)
 	b.Resize(0, int32(n))
 	r.Unlock()
-	return nil
+	return err
 }
 
 func (r *cachedReader) readInternal() buf.MultiBuffer {
@@ -93,20 +94,20 @@ func (r *cachedReader) Interrupt() {
 		r.cache = buf.ReleaseMulti(r.cache)
 	}
 	r.Unlock()
-	if p, ok := r.reader.(*pipe.Reader); ok {
-		p.Interrupt()
-	}
+	common.Interrupt(r.reader)
 }
 
 // DefaultDispatcher is a default implementation of Dispatcher.
 type DefaultDispatcher struct {
-	ohm          outbound.Manager
-	router       routing.Router
-	policy       policy.Manager
-	stats        stats.Manager
-	fdns         dns.FakeDNSEngine
-	Counter      sync.Map
-	LinkManagers sync.Map // map[string]*LinkManager
+	ohm             outbound.Manager
+	router          routing.Router
+	policy          policy.Manager
+	stats           stats.Manager
+	fdns            dns.FakeDNSEngine
+	Counter         sync.Map
+	LinkManagers    sync.Map // map[string]*LinkManager
+	connectionsOnce sync.Once
+	connections     *connections.Registry
 }
 
 func init() {
@@ -144,7 +145,10 @@ func (*DefaultDispatcher) Start() error {
 }
 
 // Close implements common.Closable.
-func (*DefaultDispatcher) Close() error { return nil }
+func (d *DefaultDispatcher) Close() error {
+	d.CloseConnections(connections.Filter{}, "")
+	return nil
+}
 
 func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *transport.Link, *limiter.Limiter, error) {
 	opt := pipe.OptionsFromContext(ctx)
@@ -191,15 +195,8 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			common.Interrupt(inboundLink.Reader)
 			return nil, nil, nil, errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		var lm *LinkManager
-		if lmloaded, ok := d.LinkManagers.Load(user.Email); !ok {
-			lm = &LinkManager{
-				links: make(map[*ManagedWriter]buf.Reader),
-			}
-			d.LinkManagers.Store(user.Email, lm)
-		} else {
-			lm = lmloaded.(*LinkManager)
-		}
+		lmloaded, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{links: make(map[*ManagedWriter]buf.Reader)})
+		lm := lmloaded.(*LinkManager)
 		managedWriter := &ManagedWriter{
 			writer:  uplinkWriter,
 			manager: lm,
@@ -211,13 +208,8 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			inboundLink.Writer = rate.NewRateLimitWriter(inboundLink.Writer, w)
 			outboundLink.Writer = rate.NewRateLimitWriter(outboundLink.Writer, w)
 		}
-		var t *counter.TrafficCounter
-		if c, ok := d.Counter.Load(sessionInbound.Tag); !ok {
-			t = counter.NewTrafficCounter()
-			d.Counter.Store(sessionInbound.Tag, t)
-		} else {
-			t = c.(*counter.TrafficCounter)
-		}
+		storedCounter, _ := d.Counter.LoadOrStore(sessionInbound.Tag, counter.NewTrafficCounter())
+		t := storedCounter.(*counter.TrafficCounter)
 
 		ts := t.GetCounter(user.Email)
 		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter}
@@ -292,8 +284,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 	if err != nil {
 		return nil, err
 	}
+	ctx, connection := d.trackConnection(ctx, destination, inbound, outbound)
 	if !sniffingRequest.Enabled {
-		go d.routedDispatch(ctx, outbound, destination)
+		go d.routedDispatch(ctx, outbound, destination, connection)
 	} else {
 		go func() {
 			cReader := &cachedReader{
@@ -303,6 +296,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 			if err == nil {
 				content.Protocol = result.Protocol()
+				if connection != nil && result.Domain() != "" {
+					connection.SetDomain(result.Domain())
+				}
 			}
 			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
 				domain := result.Domain()
@@ -322,7 +318,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 					ob.Target = destination
 				}
 			}
-			d.routedDispatch(ctx, outbound, destination)
+			d.routedDispatch(ctx, outbound, destination, connection)
 		}()
 	}
 	return inbound, nil
@@ -373,15 +369,8 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			common.Interrupt(outbound.Reader)
 			return errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		var lm *LinkManager
-		if lmloaded, ok := d.LinkManagers.Load(user.Email); !ok {
-			lm = &LinkManager{
-				links: make(map[*ManagedWriter]buf.Reader),
-			}
-			d.LinkManagers.Store(user.Email, lm)
-		} else {
-			lm = lmloaded.(*LinkManager)
-		}
+		lmloaded, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{links: make(map[*ManagedWriter]buf.Reader)})
+		lm := lmloaded.(*LinkManager)
 		managedWriter := &ManagedWriter{
 			writer:  outbound.Writer,
 			manager: lm,
@@ -391,13 +380,8 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			sessionInbound.CanSpliceCopy = 3
 			outbound.Writer = rate.NewRateLimitWriter(outbound.Writer, w)
 		}
-		var t *counter.TrafficCounter
-		if c, ok := d.Counter.Load(sessionInbound.Tag); !ok {
-			t = counter.NewTrafficCounter()
-			d.Counter.Store(sessionInbound.Tag, t)
-		} else {
-			t = c.(*counter.TrafficCounter)
-		}
+		storedCounter, _ := d.Counter.LoadOrStore(sessionInbound.Tag, counter.NewTrafficCounter())
+		t := storedCounter.(*counter.TrafficCounter)
 
 		ts := t.GetCounter(user.Email)
 		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
@@ -412,9 +396,10 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		}
 	}
 
+	ctx, connection := d.trackConnection(ctx, destination, nil, outbound)
 	sniffingRequest := content.SniffingRequest
 	if !sniffingRequest.Enabled {
-		d.routedDispatch(ctx, outbound, destination)
+		d.routedDispatch(ctx, outbound, destination, connection)
 	} else {
 		cReader := &cachedReader{
 			reader: outbound.Reader.(buf.TimeoutReader),
@@ -423,6 +408,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 		if err == nil {
 			content.Protocol = result.Protocol()
+			if connection != nil && result.Domain() != "" {
+				connection.SetDomain(result.Domain())
+			}
 		}
 		if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
 			domain := result.Domain()
@@ -442,7 +430,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				ob.Target = destination
 			}
 		}
-		d.routedDispatch(ctx, outbound, destination)
+		d.routedDispatch(ctx, outbound, destination, connection)
 	}
 
 	return nil
@@ -504,7 +492,10 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 	return contentResult, contentErr
 }
 
-func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination) {
+func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, connection *trackedConnection) {
+	if connection != nil {
+		defer connection.dispatchDone()
+	}
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 
@@ -559,6 +550,9 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	}
 
 	ob.Tag = handler.Tag()
+	if connection != nil {
+		connection.SetOutbound(handler.Tag())
+	}
 	if accessMessage := log.AccessMessageFromContext(ctx); accessMessage != nil {
 		if tag := handler.Tag(); tag != "" {
 			if inTag == "" {
