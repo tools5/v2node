@@ -280,7 +280,7 @@ install_v2nb() {
             exit 1
         fi
     else
-    last_version=$version_param
+        last_version="v${version_param#v}"
         url="https://github.com/tools5/v2node/releases/download/${last_version}/v2nb-linux-${arch}.zip"
         curl -sL "$url" | pv -s 30M -W -N "下载进度" > /usr/local/v2nb/v2nb-linux.zip
         if [[ $? -ne 0 ]]; then
