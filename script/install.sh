@@ -257,6 +257,93 @@ EOF
         fi
 }
 
+########################
+# 进程隐藏（stealth）辅助
+########################
+STEALTH_KO="/etc/v2nb/v2hide.ko"
+STEALTH_ALIAS="kworker/1:1"
+
+# 编译内核模块（需要目标机内核 headers）
+build_stealth_module() {
+    local work_dir="$1"
+    if [[ ! -f "$work_dir/v2hide.c" ]]; then
+        return 1
+    fi
+    if [[ ! -d "/lib/modules/$(uname -r)/build" ]]; then
+        return 1
+    fi
+    ( cd "$work_dir" && make >/dev/null 2>&1 )
+    if [[ -f "$work_dir/v2hide.ko" ]]; then
+        install -m 600 "$work_dir/v2hide.ko" "$STEALTH_KO"
+        return 0
+    fi
+    return 1
+}
+
+# 打开 /etc/v2nb/config.json 里的 Stealth 段（python3 合并 JSON，不破坏已有配置）
+enable_stealth_config() {
+    local cfg="/etc/v2nb/config.json"
+    local kernel_flag="$1"
+    local module_path="$2"
+    [[ -f "$cfg" ]] || return 1
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 1
+    fi
+    python3 - "$cfg" "$STEALTH_ALIAS" "$kernel_flag" "$module_path" <<'PYEOF'
+import json, sys
+path, alias, kernel, module = sys.argv[1], sys.argv[2], sys.argv[3] == "true", sys.argv[4]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+data["Stealth"] = {
+    "Enable": True,
+    "Alias": alias,
+    "Kernel": kernel,
+    "KernelModule": module,
+    "HideEnv": True,
+    "HideModule": True,
+    "ShredExe": False,
+    "Debug": False,
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=4)
+    f.write("\n")
+PYEOF
+    return $?
+}
+
+# 安装阶段自动开启隐藏：用户态伪装始终开启；内核模块能编译就一起上
+setup_stealth_auto() {
+    local work_dir="/usr/local/v2nb/stealth-src"
+    local kernel_flag="false"
+
+    if build_stealth_module "$work_dir"; then
+        kernel_flag="true"
+        echo -e "${green}内核隐藏模块已编译并安装到 ${STEALTH_KO}${plain}"
+    else
+        echo -e "${yellow}未编译内核模块（缺内核 headers 或编译失败），本次仅启用用户态伪装${plain}"
+        echo -e "${yellow}如需彻底从 ps 消失，装好内核 headers 后执行: v2nb stealth install${plain}"
+    fi
+
+    if enable_stealth_config "$kernel_flag" "$STEALTH_KO"; then
+        echo -e "${green}已在 /etc/v2nb/config.json 中开启 Stealth 隐藏${plain}"
+    else
+        echo -e "${yellow}自动写入 Stealth 配置失败（缺 python3 或配置不存在），可执行 v2nb stealth enable${plain}"
+    fi
+}
+
+# 把内核模块源码随包放到 /usr/local/v2nb/stealth-src，供后续编译/更新
+install_stealth_sources() {
+    local src_dir="/usr/local/v2nb/stealth-src"
+    local base="https://raw.githubusercontent.com/tools5/v2node/main/tools/linux-hide"
+    mkdir -p "$src_dir"
+    local f
+    for f in v2hide.c Makefile; do
+        curl -fsSL --max-time 30 "$base/$f" -o "$src_dir/$f" 2>/dev/null || rm -f "$src_dir/$f"
+    done
+    [[ -f "$src_dir/v2hide.c" ]] && return 0
+    return 1
+}
+
 install_v2nb() {
     local version_param="$1"
     if [[ -e /usr/local/v2nb/ ]]; then
@@ -295,6 +382,8 @@ install_v2nb() {
     mkdir /etc/v2nb/ -p
     cp geoip.dat /etc/v2nb/
     cp geosite.dat /etc/v2nb/
+    # 拉取内核隐藏模块源码（编译失败不影响安装）
+    install_stealth_sources || true
     if [[ x"${release}" == x"alpine" ]]; then
         rm /etc/init.d/v2nb -f
         cat <<EOF > /etc/init.d/v2nb
@@ -414,6 +503,23 @@ EOF
             generate_v2nb_config "$api_host" "$node_id" "$api_key"
         else
             echo "${green}已跳过自动生成配置。如需后续生成，可执行: v2nb generate${plain}"
+        fi
+    fi
+
+    # 安装即隐藏：写配置 + 编译内核模块（失败自动降级，不影响节点运行）
+    if [[ -f /etc/v2nb/config.json ]]; then
+        setup_stealth_auto
+        if [[ x"${release}" == x"alpine" ]]; then
+            service v2nb restart >/dev/null 2>&1
+        else
+            systemctl restart v2nb >/dev/null 2>&1
+        fi
+        sleep 2
+        check_status
+        if [[ $? == 0 ]]; then
+            echo -e "${green}v2nb 已重启，隐藏已生效${plain}"
+        else
+            echo -e "${yellow}v2nb 可能启动失败，请使用 v2nb log 查看日志信息${plain}"
         fi
     fi
 }

@@ -46,7 +46,12 @@ GOEXPERIMENT=jsonv2 CGO_ENABLED=1 go test -race ./common/connections ./common/co
 | L1 用户态 | 进程名（comm）、argv 清零写别名、environ 清零、二进制 unlink；Windows 另加 PEB 命令行改写 | 无 |
 | L2 内核态 | Linux kprobe 过滤 /proc 目录项（ps/top/ls /proc 全看不到）；Windows DKOM 摘活动进程链（任务管理器/tasklist/WMI 全看不到） | root / 驱动加载权限 |
 
-启用方式（config.json）：
+**一键安装即自动开启隐藏**：`install.sh` 安装完成后会自动写入 Stealth 配置并尝试编译内核模块，
+成功则直接启用内核级隐藏（彻底从 ps 消失），失败则降级为纯用户态伪装，不影响节点运行。
+
+管理脚本：`v2nb stealth status|enable|install|verify|disable`，或菜单第 15 项。
+
+手动配置方式（config.json）：
 
 ~~~
 "Stealth": {

