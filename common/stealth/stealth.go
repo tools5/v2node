@@ -129,3 +129,4 @@ func sanitizeAlias(s string) string {
 	}
 	return out
 }
+// CI 触发标记：确认 release 工作流可正常构建
