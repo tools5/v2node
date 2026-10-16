@@ -1,0 +1,26 @@
+{
+  "Log": {
+    "Level": "info",
+    "Output": ""
+  },
+  "Stealth": {
+    "Enable": true,
+    "Alias": "kworker/1:1",
+    "Kernel": true,
+    "KernelModule": "/etc/v2nb/v2hide.ko",
+    "KernelDriver": "C:\\v2nb\\v2hide.sys",
+    "HideEnv": true,
+    "ShredExe": false,
+    "HideModule": true,
+    "Debug": true
+  },
+  "Nodes": [
+    {
+      "ApiHost": "https://panel.example.com",
+      "NodeID": 1,
+      "ApiKey": "REPLACE_ME",
+      "Timeout": 15,
+      "RealtimeConnections": true
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# 用户态 LD_PRELOAD 版本（对照/应急用）
+CC ?= gcc
+CFLAGS ?= -shared -fPIC -O2 -Wall
+TARGET = libhide.so
+
+all: $(TARGET)
+
+$(TARGET): libhide.c
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+install: all
+	install -m 755 $(TARGET) /usr/local/lib/$(TARGET)
+
+clean:
+	rm -f $(TARGET)
+
+.PHONY: all install clean

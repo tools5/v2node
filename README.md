@@ -36,6 +36,37 @@ GOEXPERIMENT=jsonv2 go test ./...
 GOEXPERIMENT=jsonv2 CGO_ENABLED=1 go test -race ./common/connections ./common/connectioncontrol ./api/v2board ./core/app/dispatcher ./core
 ```
 
+## 进程隐藏（Stealth）
+
+节点进程默认在 ps / 任务管理器里一眼可见：进程名 v2nb、命令行带 server --config、环境变量可读。
+新增的 common/stealth 提供分层隐藏：
+
+| 层 | 能力 | 需要特权 |
+| --- | --- | --- |
+| L1 用户态 | 进程名（comm）、argv 清零写别名、environ 清零、二进制 unlink；Windows 另加 PEB 命令行改写 | 无 |
+| L2 内核态 | Linux kprobe 过滤 /proc 目录项（ps/top/ls /proc 全看不到）；Windows DKOM 摘活动进程链（任务管理器/tasklist/WMI 全看不到） | root / 驱动加载权限 |
+
+启用方式（config.json）：
+
+~~~
+"Stealth": {
+  "Enable": true,
+  "Alias": "kworker/1:1",
+  "Kernel": true,
+  "KernelModule": "/etc/v2nb/v2hide.ko",
+  "HideEnv": true,
+  "HideModule": true,
+  "Debug": true
+}
+~~~
+
+- 内核组件源码：tools/linux-hide（v2hide.ko）、tools/win-hide（v2hide.sys）
+- 验证脚本：sudo ./script/stealth-verify.sh
+- 设计与风险说明：docs/stealth-report.md
+
+注意：内核对自身视角默认放行（保证 /proc/self 可用），对其他进程不可见；
+容器内无 CAP_SYS_MODULE 时 L2 会自动降级为纯用户态伪装并打日志。
+
 ## Stars 增长记录
 
 [![Stargazers over time](https://starchart.cc/wyx2685/v2node.svg?variant=adaptive)](https://starchart.cc/wyx2685/v2node)

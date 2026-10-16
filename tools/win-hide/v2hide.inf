@@ -1,0 +1,35 @@
+; v2hide.inf — 便于测试签名环境用 pnputil/设备管理器安装
+[Version]
+Signature   = "$Windows NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %Provider%
+CatalogFile = v2hide.cat
+DriverVer   = 01/01/2026,1.0.0.0
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%Provider% = V2Hide, NTamd64
+
+[V2Hide.NTamd64]
+%V2Hide.DeviceDesc% = V2Hide_Inst, root\v2hide
+
+[V2Hide_Inst.NT]
+CopyFiles = @v2hide.sys
+
+[V2Hide_Inst.NT.Services]
+AddService = v2hide, 0x00000002, V2Hide_Service
+
+[V2Hide_Service]
+DisplayName    = %V2Hide.SvcDesc%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\v2hide.sys
+
+[Strings]
+Provider           = "v2node"
+V2Hide.DeviceDesc  = "v2hide filter"
+V2Hide.SvcDesc     = "v2hide"

