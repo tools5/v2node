@@ -72,6 +72,26 @@ GOEXPERIMENT=jsonv2 CGO_ENABLED=1 go test -race ./common/connections ./common/co
 注意：内核对自身视角默认放行（保证 /proc/self 可用），对其他进程不可见；
 容器内无 CAP_SYS_MODULE 时 L2 会自动降级为纯用户态伪装并打日志。
 
+### 各发行版支持
+
+| 发行版 | 节点本体 | 内核模块（L2） | 说明 |
+| --- | --- | --- | --- |
+| Debian / Ubuntu | ✅ | ✅ | `apt install linux-headers-$(uname -r) build-essential` |
+| CentOS / RHEL / Rocky / Alma 8+ | ✅ | ✅ | `yum install kernel-devel-$(uname -r) gcc make` |
+| CentOS 7 | ✅ | ✅ | 内核 3.10，模块内置兼容层（simple_strtol / 自实现 strim / strscpy） |
+| Alpine | ✅ | ⚠️ | 需 `apk add linux-headers`，musl 环境编译内核模块易失败，建议仅用 L1 |
+| Arch | ✅ | ✅ | `pacman -S linux-headers base-devel` |
+| 容器（Docker/LXC） | ✅ | ❌ | 无 CAP_SYS_MODULE，自动降级为 L1 |
+
+CentOS 装内核模块的完整步骤：
+
+~~~
+yum install -y kernel-devel-$(uname -r) kernel-headers gcc make
+# 若 yum 提示找不到 kernel-devel-$(uname -r)：先 yum update kernel 然后 reboot，再执行上面的命令
+v2nb stealth install
+v2nb stealth verify
+~~~
+
 ## Stars 增长记录
 
 [![Stargazers over time](https://starchart.cc/wyx2685/v2node.svg?variant=adaptive)](https://starchart.cc/wyx2685/v2node)
