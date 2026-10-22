@@ -45,3 +45,10 @@ session. Test-only outbound rules allow loopback; production routing policy
 is unchanged. The pinned Xray AnyTLS native UDP outbound parses server UoT
 responses as requests, so AnyTLS UDP validation uses sing's standard encoding
 over its TCP stream. This change does not modify that preexisting client bug.
+
+The integration test loads its temporary TLS certificate once. The pinned
+Xray certificate/OCSP reloader mutates the shared certificate slice without
+synchronization, which independently triggers the race detector. The test
+retains real TLS handshakes and concurrent protocol/accounting checks, but
+does not validate certificate rotation. Production certificate reload/OCSP
+settings and the pinned dependency are unchanged; that upstream race remains.

@@ -31,9 +31,12 @@ import (
 	"github.com/wyx2685/v2node/conf"
 	"github.com/wyx2685/v2node/core/dualtls"
 	"github.com/wyx2685/v2node/limiter"
+	"github.com/xtls/xray-core/app/proxyman"
 	xnet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
 	xcore "github.com/xtls/xray-core/core"
 	xconf "github.com/xtls/xray-core/infra/conf"
+	xtls "github.com/xtls/xray-core/transport/internet/tls"
 )
 
 func testTLSCertificate(t *testing.T) (string, string, *x509.CertPool) {
@@ -187,7 +190,33 @@ func TestDualTLSOneListenerBothProtocolsAndAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { server.Close() })
-	if err := server.AddNode(info.Tag, info); err != nil {
+	inbound, err := buildInbound(info, info.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverConfig, err := inbound.ReceiverSettings.GetInstance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := receiverConfig.(*proxyman.ReceiverConfig)
+	if len(receiver.StreamSettings.SecuritySettings) != 1 {
+		t.Fatal("expected one ordinary TLS configuration")
+	}
+	tlsConfig, err := receiver.StreamSettings.SecuritySettings[0].GetInstance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// These temporary certificates never rotate. The pinned Xray certificate
+	// reloader writes its shared certificate slice without synchronization,
+	// including on its initial OCSP refresh. Keep that unrelated upstream race
+	// out of this protocol/accounting test by using an immutable test fixture.
+	// Production certificate reload and OCSP settings remain unchanged.
+	for _, certificate := range tlsConfig.(*xtls.Config).Certificate {
+		certificate.OneTimeLoading = true
+	}
+	receiver.StreamSettings.SecuritySettings[0] = serial.ToTypedMessage(tlsConfig)
+	inbound.ReceiverSettings = serial.ToTypedMessage(receiver)
+	if err := server.addInbound(inbound); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := server.AddUsers(&AddUsersParams{Tag: info.Tag, NodeInfo: info, Users: users}); err != nil {
