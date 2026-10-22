@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -16,6 +17,7 @@ import (
 
 type Client struct {
 	dualTLS          bool
+	appliedRevision  atomic.Value
 	client           *resty.Client
 	APIHost          string
 	Token            string
@@ -35,7 +37,7 @@ func New(c *conf.NodeConfig) (*Client, error) {
 	}
 	client.SetRetryCount(retryCount)
 	client.SetHeader("User-Agent", fmt.Sprintf("v2node go-resty/%s (https://github.com/go-resty/resty)", resty.Version))
-	client.SetHeader("X-V2nb-Features", "anytls-child-routing-v1")
+	client.SetHeader("X-V2nb-Features", "anytls-child-routing-v1,anytls-vless-panel-v1")
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
 	} else {
@@ -65,4 +67,21 @@ func New(c *conf.NodeConfig) (*Client, error) {
 		UserList: &UserListBody{},
 		AliveMap: &AliveMap{},
 	}, nil
+}
+
+// MarkNodeApplied is called only after the TLS listener and its users have
+// started. A parsed or downloaded configuration alone is not an acknowledgement.
+func (c *Client) MarkNodeApplied(node *NodeInfo) {
+	revision := ""
+	if node != nil && node.Common != nil && node.Common.DualTLS {
+		revision = node.ConfigRevision
+	}
+	c.appliedRevision.Store(revision)
+}
+
+func (c *Client) appliedConfigRevision() string {
+	if revision := c.appliedRevision.Load(); revision != nil {
+		return revision.(string)
+	}
+	return ""
 }

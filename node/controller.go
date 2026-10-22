@@ -91,6 +91,7 @@ func (c *Controller) Start(x *core.V2Core) error {
 	}
 	log.WithField("tag", c.tag).Infof("Added %d new users", added)
 	c.info = node
+	c.apiClient.MarkNodeApplied(node)
 	c.startTasks(node)
 	c.startConnectionMonitor()
 	return nil
@@ -98,6 +99,7 @@ func (c *Controller) Start(x *core.V2Core) error {
 
 // Close implement the Close() function of the service interface
 func (c *Controller) Close() error {
+	c.apiClient.MarkNodeApplied(nil)
 	c.stopConnectionMonitor()
 	limiter.DeleteLimiter(c.tag)
 	if c.nodeInfoMonitorPeriodic != nil {

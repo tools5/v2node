@@ -19,9 +19,9 @@ GOEXPERIMENT=jsonv2 go build -v -o build_assets/v2nb -trimpath -ldflags "-X 'git
 
 ## AnyTLS / VLESS 共用入口
 
-现有 AnyTLS TCP + TLS 节点可以在同一个域名、端口和 NodeID 上提供两种协议。升级节点后，在原 `Nodes` 条目设置 `"AnyTLSVLESS": true` 即可启用，无需新增 VLESS 节点；默认保持原有 AnyTLS 行为。
+现有 AnyTLS TCP + TLS 节点可以在同一个域名、端口和 NodeID 上提供两种协议。升级节点后，在面板原物理节点的编辑页开启“AnyTLS / VLESS 双协议”，保存后自动下发，无需编辑服务器 JSON 或新增 VLESS 节点；默认保持原有 AnyTLS 行为。
 
-需要配套面板的订阅映射，并且只向用户开放已升级、实测的节点。共享子线路继续使用自己的出口和原账号计费。此入口支持普通 VLESS TCP + TLS，不支持 Vision、Reality 或 WebSocket。完整配置、订阅更新和回滚说明见 [docs/dual-tls.md](docs/dual-tls.md)。
+需要配套面板开关及订阅映射，节点确认成功加载双协议后才开放 VLESS 订阅，仍需实际公网连接验收。旧 JSON 开关作为兼容回退保留。共享子线路继续使用自己的出口和原账号计费。此入口支持普通 VLESS TCP + TLS，不支持 Vision、Reality 或 WebSocket。完整配置、订阅更新和回滚说明见 [docs/dual-tls.md](docs/dual-tls.md)。
 
 ## 实时连接
 

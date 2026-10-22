@@ -22,17 +22,19 @@ const (
 )
 
 type NodeInfo struct {
-	Id           int
-	Type         string
-	Security     int
-	PushInterval time.Duration
-	PullInterval time.Duration
-	Tag          string
-	Common       *CommonNode
+	Id             int
+	Type           string
+	Security       int
+	PushInterval   time.Duration
+	PullInterval   time.Duration
+	Tag            string
+	ConfigRevision string // panel ETag acknowledged only after the listener and users start
+	Common         *CommonNode
 }
 
 type CommonNode struct {
-	DualTLS        bool                `json:"-"` // local opt-in, never inferred from subscription output
+	DualTLS        bool                `json:"-"`
+	PanelDualTLS   *bool               `json:"anytls_vless,omitempty"` // explicit panel setting overrides legacy JSON
 	Protocol       string              `json:"protocol"`
 	ListenIP       string              `json:"listen_ip"`
 	ServerPort     int                 `json:"server_port"`
@@ -130,6 +132,7 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	r, err := c.client.
 		R().
 		SetContext(ctx).
+		SetHeader("X-V2nb-Config-Applied", c.appliedConfigRevision()).
 		SetHeader("If-None-Match", c.nodeEtag).
 		ForceContentType("application/json").
 		Get(path)
@@ -161,7 +164,8 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 		return nil, fmt.Errorf("received nil response")
 	}
 	node = &NodeInfo{
-		Id: c.NodeId,
+		Id:             c.NodeId,
+		ConfigRevision: strings.Trim(r.Header().Get("ETag"), "\""),
 	}
 	// parse protocol params
 	cm := &CommonNode{}
@@ -170,6 +174,9 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 		return nil, fmt.Errorf("decode node params error: %s", err)
 	}
 	cm.DualTLS = c.dualTLS
+	if cm.PanelDualTLS != nil {
+		cm.DualTLS = *cm.PanelDualTLS
+	}
 	switch cm.Protocol {
 	case "vmess", "trojan", "hysteria2", "tuic", "anytls", "vless":
 		node.Type = cm.Protocol
