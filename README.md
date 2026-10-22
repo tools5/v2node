@@ -17,6 +17,12 @@ wget -N https://raw.githubusercontent.com/tools5/v2node/main/script/install.sh &
 GOEXPERIMENT=jsonv2 go build -v -o build_assets/v2nb -trimpath -ldflags "-X 'github.com/wyx2685/v2node/cmd.version=$version' -s -w -buildid="
 ```
 
+## AnyTLS / VLESS 共用入口
+
+现有 AnyTLS TCP + TLS 节点可以在同一个域名、端口和 NodeID 上提供两种协议。升级节点后，在原 `Nodes` 条目设置 `"AnyTLSVLESS": true` 即可启用，无需新增 VLESS 节点；默认保持原有 AnyTLS 行为。
+
+需要配套面板的订阅映射，并且只向用户开放已升级、实测的节点。共享子线路继续使用自己的出口和原账号计费。此入口支持普通 VLESS TCP + TLS，不支持 Vision、Reality 或 WebSocket。完整配置、订阅更新和回滚说明见 [docs/dual-tls.md](docs/dual-tls.md)。
+
 ## 实时连接
 
 配套的 V2board 管理端在用户详情中提供「实时连接」，支持按节点查看当前连接的来源、目标、出站、上传/下载流量与持续时间，以及断开单条连接或该用户当前连接。自动刷新间隔为 5 秒；查询需要节点响应，页面会区分等待、离线和过期数据。

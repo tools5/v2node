@@ -39,6 +39,7 @@ type LogConfig struct {
 }
 
 type NodeConfig struct {
+	AnyTLSVLESS         bool   `mapstructure:"AnyTLSVLESS"`
 	APIHost             string `mapstructure:"ApiHost"`
 	NodeID              int    `mapstructure:"NodeID"`
 	Key                 string `mapstructure:"ApiKey"`

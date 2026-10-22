@@ -1,0 +1,8 @@
+syntax = "proto3";
+package v2nb.dualtls;
+option go_package = "github.com/wyx2685/v2node/core/dualtls";
+
+// The ordinary TLS receiver is retained. Only its decrypted proxy is replaced.
+message Config {
+  bytes anytls_settings = 1;
+}

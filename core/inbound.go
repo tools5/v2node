@@ -13,7 +13,9 @@ import (
 	"time"
 
 	panel "github.com/wyx2685/v2node/api/v2board"
+	"github.com/wyx2685/v2node/core/dualtls"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/infra/conf"
@@ -187,7 +189,17 @@ func buildInbound(nodeInfo *panel.NodeInfo, tag string) (*core.InboundHandlerCon
 		break
 	}
 	in.Tag = tag
-	return in.Build()
+	built, err := in.Build()
+	if err != nil || !nodeInfo.Common.DualTLS {
+		return built, err
+	}
+	if nodeInfo.Type != "anytls" || nodeInfo.Security != panel.Tls ||
+		(nodeInfo.Common.Network != "" && nodeInfo.Common.Network != "tcp" && nodeInfo.Common.Network != "raw") ||
+		in.StreamSetting == nil || in.StreamSetting.Security != "tls" {
+		return nil, errors.New("AnyTLSVLESS requires an AnyTLS TCP node with an ordinary TLS certificate")
+	}
+	built.ProxySettings = serial.ToTypedMessage(&dualtls.Config{AnytlsSettings: built.ProxySettings.Value})
+	return built, nil
 }
 
 func buildVLess(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {

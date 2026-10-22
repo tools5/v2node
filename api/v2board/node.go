@@ -32,6 +32,7 @@ type NodeInfo struct {
 }
 
 type CommonNode struct {
+	DualTLS        bool                `json:"-"` // local opt-in, never inferred from subscription output
 	Protocol       string              `json:"protocol"`
 	ListenIP       string              `json:"listen_ip"`
 	ServerPort     int                 `json:"server_port"`
@@ -168,6 +169,7 @@ func (c *Client) GetNodeInfo(ctx context.Context) (node *NodeInfo, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode node params error: %s", err)
 	}
+	cm.DualTLS = c.dualTLS
 	switch cm.Protocol {
 	case "vmess", "trojan", "hysteria2", "tuic", "anytls", "vless":
 		node.Type = cm.Protocol

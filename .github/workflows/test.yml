@@ -22,5 +22,5 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
-      - name: Check concurrent connection tracking and control
-        run: go test -race ./common/connections ./common/connectioncontrol ./api/v2board ./core/app/dispatcher ./core
+      - name: Check connection tracking, shared routing and dual TLS concurrency
+        run: go test -race ./common/connections ./common/connectioncontrol ./api/v2board ./core/app/dispatcher ./core/dualtls ./core ./limiter ./node

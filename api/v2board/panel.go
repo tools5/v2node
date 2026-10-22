@@ -15,6 +15,7 @@ import (
 // Panel is the interface for different panel's api.
 
 type Client struct {
+	dualTLS          bool
 	client           *resty.Client
 	APIHost          string
 	Token            string
@@ -56,6 +57,7 @@ func New(c *conf.NodeConfig) (*Client, error) {
 		"token":     c.Key,
 	})
 	return &Client{
+		dualTLS:  c.AnyTLSVLESS,
 		client:   client,
 		Token:    c.Key,
 		APIHost:  c.APIHost,
