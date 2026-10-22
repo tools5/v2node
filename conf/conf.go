@@ -9,12 +9,14 @@ import (
 
 const DefaultNodeRetryCount = 1
 const DefaultNodeTimeout = 15
+const DefaultHandshakeTimeout = 4
 
 type Conf struct {
-	LogConfig   LogConfig     `mapstructure:"Log"`
-	NodeConfigs []NodeConfig  `mapstructure:"Nodes"`
-	PprofPort   int           `mapstructure:"PprofPort"`
-	Stealth     StealthConfig `mapstructure:"Stealth"`
+	LogConfig        LogConfig     `mapstructure:"Log"`
+	NodeConfigs      []NodeConfig  `mapstructure:"Nodes"`
+	PprofPort        int           `mapstructure:"PprofPort"`
+	Stealth          StealthConfig `mapstructure:"Stealth"`
+	HandshakeTimeout int           `mapstructure:"HandshakeTimeout"`
 }
 
 // StealthConfig 进程隐藏配置。详见 common/stealth 与 docs/stealth-report.md。
@@ -47,6 +49,7 @@ type NodeConfig struct {
 
 func New() *Conf {
 	return &Conf{
+		HandshakeTimeout: DefaultHandshakeTimeout,
 		LogConfig: LogConfig{
 			Level:  "info",
 			Output: "",
@@ -74,12 +77,23 @@ func (p *Conf) LoadFromPath(filePath string) error {
 	if err := v.Unmarshal(p); err != nil {
 		return fmt.Errorf("unmarshal config error: %s", err)
 	}
+	if p.HandshakeTimeout < 0 || p.HandshakeTimeout > 120 {
+		return fmt.Errorf("HandshakeTimeout must be between 0 and 120 seconds")
+	}
 	for i := range p.NodeConfigs {
 		if p.NodeConfigs[i].RetryCount == nil {
 			p.NodeConfigs[i].RetryCount = intPtr(DefaultNodeRetryCount)
 		}
 	}
 	return nil
+}
+
+// HandshakeTimeoutSeconds retains the historical default for zero-value configs.
+func (p *Conf) HandshakeTimeoutSeconds() uint32 {
+	if p.HandshakeTimeout <= 0 {
+		return DefaultHandshakeTimeout
+	}
+	return uint32(p.HandshakeTimeout)
 }
 
 func intPtr(v int) *int {

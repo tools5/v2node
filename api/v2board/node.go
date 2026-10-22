@@ -32,11 +32,12 @@ type NodeInfo struct {
 }
 
 type CommonNode struct {
-	Protocol   string      `json:"protocol"`
-	ListenIP   string      `json:"listen_ip"`
-	ServerPort int         `json:"server_port"`
-	Routes     []Route     `json:"routes"`
-	BaseConfig *BaseConfig `json:"base_config"`
+	Protocol       string              `json:"protocol"`
+	ListenIP       string              `json:"listen_ip"`
+	ServerPort     int                 `json:"server_port"`
+	Routes         []Route             `json:"routes"`
+	SharedChildren []SharedAnyTLSChild `json:"shared_anytls_children,omitempty"`
+	BaseConfig     *BaseConfig         `json:"base_config"`
 	//vless vmess trojan
 	Tls                  int         `json:"tls"`
 	TlsSettings          TlsSettings `json:"tls_settings"`
@@ -69,6 +70,11 @@ type Route struct {
 	Match       []string `json:"match"`
 	Action      string   `json:"action"`
 	ActionValue *string  `json:"action_value"`
+}
+
+type SharedAnyTLSChild struct {
+	Id     int     `json:"id"`
+	Routes []Route `json:"routes"`
 }
 
 type BaseConfig struct {

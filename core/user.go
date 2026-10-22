@@ -52,13 +52,15 @@ func (vc *V2Core) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo
 	defer vc.users.mapLock.Unlock()
 	for i := range users {
 		user = format.UserTag(tag, users[i].Uuid)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = userManager.RemoveUser(ctx, user)
-		cancel()
-		if err != nil {
-			return err
+		for _, email := range authUserEmails(tag, users[i]) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err = userManager.RemoveUser(ctx, email)
+			cancel()
+			if err != nil {
+				return err
+			}
+			delete(vc.users.uidMap, email)
 		}
-		delete(vc.users.uidMap, user)
 		if v, ok := vc.dispatcher.Counter.Load(tag); ok {
 			tc := v.(*counter.TrafficCounter)
 			tc.Delete(user)
@@ -109,8 +111,13 @@ func (vc *V2Core) GetUserTrafficSlice(tag string, mintraffic int) ([]panel.UserT
 func (v *V2Core) AddUsers(p *AddUsersParams) (added int, err error) {
 	v.users.mapLock.Lock()
 	defer v.users.mapLock.Unlock()
+	if err := validateSharedChildUsers(p); err != nil {
+		return 0, err
+	}
 	for i := range p.Users {
-		v.users.uidMap[format.UserTag(p.Tag, p.Users[i].Uuid)] = p.Users[i].Id
+		for _, email := range authUserEmails(p.Tag, p.Users[i]) {
+			v.users.uidMap[email] = p.Users[i].Id
+		}
 	}
 	var users []*protocol.User
 	switch p.NodeInfo.Type {
@@ -305,20 +312,55 @@ func buildTuicUser(tag string, userInfo *panel.UserInfo) (user *protocol.User) {
 }
 
 func buildAnyTLSUsers(tag string, userInfo []panel.UserInfo) (users []*protocol.User) {
-	users = make([]*protocol.User, len(userInfo))
 	for i := range userInfo {
-		users[i] = buildAnyTLSUser(tag, &userInfo[i])
+		users = append(users, buildAnyTLSUser(tag, &userInfo[i]))
+		for _, id := range userInfo[i].SharedChildIDs {
+			users = append(users, buildAnyTLSAuth(
+				format.SharedChildUserTag(tag, userInfo[i].Uuid, id),
+				format.SharedChildPassword(userInfo[i].Uuid, id)))
+		}
 	}
 	return users
 }
 
 func buildAnyTLSUser(tag string, userInfo *panel.UserInfo) (user *protocol.User) {
+	return buildAnyTLSAuth(format.UserTag(tag, userInfo.Uuid), userInfo.Uuid)
+}
+
+func buildAnyTLSAuth(email, password string) *protocol.User {
 	anyTLSAccount := &anytls.Account{
-		Password: userInfo.Uuid,
+		Password: password,
 	}
 	return &protocol.User{
 		Level:   0,
-		Email:   format.UserTag(tag, userInfo.Uuid),
+		Email:   email,
 		Account: serial.ToTypedMessage(anyTLSAccount),
 	}
+}
+
+func authUserEmails(tag string, user panel.UserInfo) []string {
+	emails := []string{format.UserTag(tag, user.Uuid)}
+	for _, id := range user.SharedChildIDs {
+		emails = append(emails, format.SharedChildUserTag(tag, user.Uuid, id))
+	}
+	return emails
+}
+
+func validateSharedChildUsers(p *AddUsersParams) error {
+	allowed := make(map[int]bool)
+	if p.NodeInfo != nil && p.Common != nil && p.Type == "anytls" {
+		for _, child := range p.Common.SharedChildren {
+			allowed[child.Id] = child.Id > 0
+		}
+	}
+	for _, user := range p.Users {
+		seen := make(map[int]bool)
+		for _, id := range user.SharedChildIDs {
+			if !allowed[id] || seen[id] {
+				return fmt.Errorf("invalid shared AnyTLS child ID: %d", id)
+			}
+			seen[id] = true
+		}
+	}
+	return nil
 }

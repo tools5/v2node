@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type Limiter struct {
 
 type UserLimitInfo struct {
 	UID               int
+	SharedChildIDs    []int
 	SpeedLimit        int
 	DeviceLimit       int
 	DynamicSpeedLimit int
@@ -52,6 +54,7 @@ func AddLimiter(nodetype string, tag string, users []panel.UserInfo, aliveList m
 		uuidmap[users[i].Uuid] = users[i].Id
 		userLimit := &UserLimitInfo{}
 		userLimit.UID = users[i].Id
+		userLimit.SharedChildIDs = slices.Clone(users[i].SharedChildIDs)
 		if users[i].SpeedLimit != 0 {
 			userLimit.SpeedLimit = users[i].SpeedLimit
 		}
@@ -114,7 +117,8 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 	}
 	for i := range added {
 		userLimit := &UserLimitInfo{
-			UID: added[i].Id,
+			UID:            added[i].Id,
+			SharedChildIDs: slices.Clone(added[i].SharedChildIDs),
 		}
 		if added[i].SpeedLimit != 0 {
 			userLimit.SpeedLimit = added[i].SpeedLimit
@@ -141,6 +145,9 @@ func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire ti
 }
 
 func (l *Limiter) CheckLimit(taguuid string, ip string, noUDPsource bool) (DynamicBucket *rate.DynamicBucket, Reject bool) {
+	// Authentication aliases share one account's bucket and device set.
+	canonical, childID := format.SplitSharedChildUser(taguuid)
+	taguuid = canonical
 	// check if ipv4 mapped ipv6
 	ip = strings.TrimPrefix(ip, "::ffff:")
 
@@ -151,6 +158,9 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, noUDPsource bool) (Dynam
 	var uid int
 	if v, ok := l.UserLimitInfo.Load(taguuid); ok {
 		u := v.(*UserLimitInfo)
+		if childID != 0 && (l.Nodetype != "anytls" || !slices.Contains(u.SharedChildIDs, childID)) {
+			return nil, true
+		}
 		deviceLimit = u.DeviceLimit
 		uid = u.UID
 		if u.ExpireTime < time.Now().Unix() && u.ExpireTime != 0 {

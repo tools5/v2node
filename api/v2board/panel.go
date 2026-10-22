@@ -34,6 +34,7 @@ func New(c *conf.NodeConfig) (*Client, error) {
 	}
 	client.SetRetryCount(retryCount)
 	client.SetHeader("User-Agent", fmt.Sprintf("v2node go-resty/%s (https://github.com/go-resty/resty)", resty.Version))
+	client.SetHeader("X-V2nb-Features", "anytls-child-routing-v1")
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
 	} else {

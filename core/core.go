@@ -97,7 +97,7 @@ func getCore(c *conf.Conf, infos []*panel.NodeInfo) *core.Instance {
 	levelPolicyConfig := &coreConf.Policy{
 		StatsUserUplink:   true,
 		StatsUserDownlink: true,
-		Handshake:         proto.Uint32(4),
+		Handshake:         proto.Uint32(c.HandshakeTimeoutSeconds()),
 		ConnectionIdle:    proto.Uint32(120),
 		UplinkOnly:        proto.Uint32(2),
 		DownlinkOnly:      proto.Uint32(4),

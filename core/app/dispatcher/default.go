@@ -10,6 +10,7 @@ import (
 
 	"github.com/wyx2685/v2node/common/connections"
 	"github.com/wyx2685/v2node/common/counter"
+	"github.com/wyx2685/v2node/common/format"
 	"github.com/wyx2685/v2node/common/rate"
 	"github.com/wyx2685/v2node/limiter"
 
@@ -26,7 +27,6 @@ import (
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
-	routing_session "github.com/xtls/xray-core/features/routing/session"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/pipe"
@@ -195,7 +195,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			common.Interrupt(inboundLink.Reader)
 			return nil, nil, nil, errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		lmloaded, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{links: make(map[*ManagedWriter]buf.Reader)})
+		lmloaded, _ := d.LinkManagers.LoadOrStore(format.CanonicalUserTag(user.Email), &LinkManager{links: make(map[*ManagedWriter]buf.Reader)})
 		lm := lmloaded.(*LinkManager)
 		managedWriter := &ManagedWriter{
 			writer:  uplinkWriter,
@@ -211,7 +211,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 		storedCounter, _ := d.Counter.LoadOrStore(sessionInbound.Tag, counter.NewTrafficCounter())
 		t := storedCounter.(*counter.TrafficCounter)
 
-		ts := t.GetCounter(user.Email)
+		ts := t.GetCounter(format.CanonicalUserTag(user.Email))
 		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter}
 		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
 		inboundLink.Writer = &dispatcher.SizeStatWriter{
@@ -369,7 +369,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			common.Interrupt(outbound.Reader)
 			return errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		lmloaded, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{links: make(map[*ManagedWriter]buf.Reader)})
+		lmloaded, _ := d.LinkManagers.LoadOrStore(format.CanonicalUserTag(user.Email), &LinkManager{links: make(map[*ManagedWriter]buf.Reader)})
 		lm := lmloaded.(*LinkManager)
 		managedWriter := &ManagedWriter{
 			writer:  outbound.Writer,
@@ -383,7 +383,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		storedCounter, _ := d.Counter.LoadOrStore(sessionInbound.Tag, counter.NewTrafficCounter())
 		t := storedCounter.(*counter.TrafficCounter)
 
-		ts := t.GetCounter(user.Email)
+		ts := t.GetCounter(format.CanonicalUserTag(user.Email))
 		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
 		outbound.Reader = &CounterReader{
 			Reader:  &buf.TimeoutWrapperReader{Reader: outbound.Reader},
@@ -501,7 +501,7 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 
 	var handler outbound.Handler
 
-	routingLink := routing_session.AsRoutingContext(ctx)
+	routingLink := sharedAnyTLSRoutingContext(ctx)
 	inTag := routingLink.GetInboundTag()
 	isPickRoute := 0
 	if forcedOutboundTag := session.GetForcedOutboundTagFromContext(ctx); forcedOutboundTag != "" {
