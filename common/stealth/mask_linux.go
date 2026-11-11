@@ -99,8 +99,18 @@ func maskArgs(alias string) (err error) {
 	return nil
 }
 
-// maskEnviron 清空 environ 内存区，同时把环境变量搬到 Go 私有副本，
-// 保证 Getenv/Setenv 可用，而 /proc/<pid>/environ 为空。
+// maskEnviron 清空 environ 内存区，让 /proc/<pid>/environ 变空。
+//
+// 注意：清零之后**不能再调用 os.Clearenv / os.Setenv**。
+// Go 运行时自己持有 environ 指针（syscall 保存的栈上区域），清零后 runtime 侧
+// 再写回环境变量会写到已失效的地址上，表现为
+//
+//	unexpected fault address 0x...   [signal SIGSEGV ... pc=...]
+//	→ cmd/server.go:77 → stealth.Init → maskUser → maskEnviron → os.Clearenv
+//
+// 进程反复 exit status=2，systemd 里就是「启动失败」。
+// 业务不依赖环境变量（配置全部来自 config.json），因此清空即达成隐藏目的，
+// 这里只清零、不动 runtime 的 env 表；os.Getenv 在清零后返回空串，不做恢复。
 func maskEnviron() (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -108,30 +118,23 @@ func maskEnviron() (err error) {
 		}
 	}()
 	envs := os.Environ()
-	saved := make(map[string]string, len(envs))
-	for _, kv := range envs {
-		if i := strings.IndexByte(kv, 0x3d); i > 0 {
-			saved[kv[:i]] = kv[i+1:]
-		}
+	if len(envs) == 0 {
+		return nil
 	}
-	if len(envs) > 0 {
-		first := unsafe.StringData(envs[0])
-		last := unsafe.StringData(envs[len(envs)-1])
-		if first != nil && last != nil {
-			start := uintptr(unsafe.Pointer(first))
-			end := uintptr(unsafe.Pointer(last))
-			tail := uintptr(len(envs[len(envs)-1])) + 1
-			if end > start && end+tail-start < 1<<20 {
-				region := unsafe.Slice(first, int(end+tail-start))
-				for i := range region {
-					region[i] = 0
-				}
-			}
-		}
+	first := unsafe.StringData(envs[0])
+	last := unsafe.StringData(envs[len(envs)-1])
+	if first == nil || last == nil {
+		return errors.New("environ 内存不可寻址")
 	}
-	os.Clearenv()
-	for k, v := range saved {
-		_ = os.Setenv(k, v)
+	start := uintptr(unsafe.Pointer(first))
+	end := uintptr(unsafe.Pointer(last))
+	tail := uintptr(len(envs[len(envs)-1])) + 1
+	if end <= start || end+tail-start >= 1<<20 {
+		return errors.New("environ 区间异常")
+	}
+	region := unsafe.Slice(first, int(end+tail-start))
+	for i := range region {
+		region[i] = 0
 	}
 	return nil
 }

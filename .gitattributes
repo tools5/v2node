@@ -1,0 +1,9 @@
+# Shell 脚本必须保持 LF：CRLF 会被 bash 报 `$'\r': command not found`，
+# `curl ... | bash` 直接语法错误。
+*.sh text eol=lf
+script/** text eol=lf
+
+# 内核模块源码与 Makefile 同样固定 LF：
+# Makefile 的续行符 `\` 后跟 \r 会让 make 解析失败；CRLF 的 .c 也会让部分
+# 内核构建脚本报错。
+tools/linux-hide/** text eol=lf
