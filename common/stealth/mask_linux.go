@@ -32,15 +32,16 @@ func maskUser(c Config) error {
 	if err := setComm(c.Alias); err != nil {
 		errs = append(errs, "comm:"+err.Error())
 	}
-	if err := maskArgs(c.Alias); err != nil {
-		errs = append(errs, "argv:"+err.Error())
-	}
+	// 必须在 maskArgs 之前：maskArgs 会把 os.Args 换成 []string{alias}，之后
+	// maskEnviron 里「os.Args[0] == alias 说明已 re-exec」的判据会一直成立，
+	// 导致 exec 永远不执行、environ 一直留着 systemd 注入的原值。
 	if c.HideEnv {
-		// 放在 argv 伪装之前：re-exec 成功后新进程会带着 alias 作为 argv[0]
-		// 重新走一遍本函数，此时 environ 已由内核置空，不必再处理。
 		if err := maskEnviron(c.Alias); err != nil {
 			errs = append(errs, "environ:"+err.Error())
 		}
+	}
+	if err := maskArgs(c.Alias); err != nil {
+		errs = append(errs, "argv:"+err.Error())
 	}
 	if c.ShredExe {
 		if err := shredSelfExe(); err != nil {
@@ -179,16 +180,29 @@ func shredSelfExe() error {
 }
 
 // VerifyPlatform 读取 /proc 自检，供 Debug 日志与验证脚本使用。
+//
+// 注意 /proc/self/exe 不能 os.ReadFile：那是符号链接指向的整个二进制，
+// 读进来再 %q 打进日志会把几十 MB 的机器码灌满 journal。
 func VerifyPlatform() []string {
 	out := []string{}
 	pid := os.Getpid()
-	for _, p := range []string{"/proc/self/comm", "/proc/self/cmdline", "/proc/self/environ", "/proc/self/exe"} {
+	if target, err := os.Readlink("/proc/self/exe"); err != nil {
+		out = append(out, fmt.Sprintf("/proc/self/exe -> 读取失败: %v", err))
+	} else {
+		out = append(out, fmt.Sprintf("/proc/self/exe -> %s", target))
+	}
+	for _, p := range []string{"/proc/self/comm", "/proc/self/cmdline", "/proc/self/environ"} {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			out = append(out, fmt.Sprintf("%s -> 读取失败: %v", p, err))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s -> %q", p, strings.Join(strings.Split(string(b), string(rune(0))), " ")))
+		if len(b) > 512 {
+			b = b[:512]
+			out = append(out, fmt.Sprintf("%s -> %q...(truncated at 512B, total shown below)", p, strings.Join(strings.Split(string(b), string(rune(0))), " ")))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s -> %q (%d 字节)", p, strings.Join(strings.Split(string(b), string(rune(0))), " "), len(b)))
 	}
 	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
 		s := string(b)
