@@ -36,7 +36,9 @@ func maskUser(c Config) error {
 		errs = append(errs, "argv:"+err.Error())
 	}
 	if c.HideEnv {
-		if err := maskEnviron(); err != nil {
+		// 放在 argv 伪装之前：re-exec 成功后新进程会带着 alias 作为 argv[0]
+		// 重新走一遍本函数，此时 environ 已由内核置空，不必再处理。
+		if err := maskEnviron(c.Alias); err != nil {
 			errs = append(errs, "environ:"+err.Error())
 		}
 	}
@@ -80,8 +82,22 @@ func maskArgs(alias string) (err error) {
 		return errors.New("os.Args 为空")
 	}
 	first := unsafe.StringData(os.Args[0])
+	if first == nil {
+		return errors.New("argv 内存不可寻址")
+	}
+	// re-exec 之后 os.Args 只有一个元素（argv[0] 已是 alias）：
+	// 只清它自己，避免区间判断把 end<=start 当成异常报出来
+	if len(os.Args) == 1 {
+		buf := unsafe.Slice(first, len(os.Args[0]))
+		for i := range buf {
+			buf[i] = 0
+		}
+		copy(buf, alias)
+		os.Args = []string{alias}
+		return nil
+	}
 	last := unsafe.StringData(os.Args[len(os.Args)-1])
-	if first == nil || last == nil {
+	if last == nil {
 		return errors.New("argv 内存不可寻址")
 	}
 	start := uintptr(unsafe.Pointer(first))
@@ -99,42 +115,49 @@ func maskArgs(alias string) (err error) {
 	return nil
 }
 
-// maskEnviron 清空 environ 内存区，让 /proc/<pid>/environ 变空。
+// maskEnviron 让 /proc/<pid>/environ 为空。
 //
-// 注意：清零之后**不能再调用 os.Clearenv / os.Setenv**。
-// Go 运行时自己持有 environ 指针（syscall 保存的栈上区域），清零后 runtime 侧
-// 再写回环境变量会写到已失效的地址上，表现为
+// 不能靠直接清零内存来实现：Go 1.27 把环境变量放在 env map 里，os.Environ()
+// 返回的 "k=v" 是遍历 map 时新建的字符串——顺序随机、堆上分散。拿首尾两个指针
+// 做区间清零，中间必然夹着无关的堆对象（env map 的桶、header 等），把它们一并
+// 抹掉之后，任何 os.Getenv 都会踩进被破坏的 map：
 //
-//	unexpected fault address 0x...   [signal SIGSEGV ... pc=...]
-//	→ cmd/server.go:77 → stealth.Init → maskUser → maskEnviron → os.Clearenv
+//	os.Getenv → syscall.Getenv → runtime.mapaccess2_faststr → SIGSEGV
+//	unexpected fault address 0x...   (pc 落在 runtime.(*itabTableType).find)
+//	→ exit status=2，systemd 表现为「启动失败」并无限重启
 //
-// 进程反复 exit status=2，systemd 里就是「启动失败」。
-// 业务不依赖环境变量（配置全部来自 config.json），因此清空即达成隐藏目的，
-// 这里只清零、不动 runtime 的 env 表；os.Getenv 在清零后返回空串，不做恢复。
-func maskEnviron() (err error) {
+// 正确做法是让内核在 exec 时用空的环境变量表重建进程镜像：exec 自身一次，
+// 新进程的 environ 天然为空，/proc/<pid>/environ 读出来就是 0 字节，且没有
+// 任何内存被破坏。成功时本函数不返回。
+func maskEnviron(alias string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("recover: %v", r)
 		}
 	}()
-	envs := os.Environ()
-	if len(envs) == 0 {
+	// 已 re-exec 过：argv[0] 由本次 exec 换成了 alias。
+	// 同时看 environ：正常情况内核给的就是空环境。
+	// 两个判据一起用，避免某个包的 init 在 exec 后又 Setenv 造成反复 re-exec。
+	if len(os.Args) > 0 && os.Args[0] == alias {
 		return nil
 	}
-	first := unsafe.StringData(envs[0])
-	last := unsafe.StringData(envs[len(envs)-1])
-	if first == nil || last == nil {
-		return errors.New("environ 内存不可寻址")
+	if len(os.Environ()) == 0 {
+		return nil
 	}
-	start := uintptr(unsafe.Pointer(first))
-	end := uintptr(unsafe.Pointer(last))
-	tail := uintptr(len(envs[len(envs)-1])) + 1
-	if end <= start || end+tail-start >= 1<<20 {
-		return errors.New("environ 区间异常")
+	if len(os.Args) == 0 {
+		return errors.New("os.Args 为空")
 	}
-	region := unsafe.Slice(first, int(end+tail-start))
-	for i := range region {
-		region[i] = 0
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		return fmt.Errorf("定位自身可执行文件失败: %v", err)
+	}
+	argv := make([]string, 0, len(os.Args))
+	argv = append(argv, alias)
+	argv = append(argv, os.Args[1:]...)
+	// envv 传 nil：内核以空环境启动新镜像。
+	// exec 成功则不返回；失败保留当前进程，只放弃环境隐藏，不影响启动。
+	if err := unix.Exec(self, argv, nil); err != nil {
+		return fmt.Errorf("re-exec 失败: %w", err)
 	}
 	return nil
 }
